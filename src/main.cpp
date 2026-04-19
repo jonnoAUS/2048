@@ -353,7 +353,7 @@ protected:
         //this->addControlButton(menu, "RIGHT", { size.width / 2.f + 40.f, 8.f }, menu_selector(Game2048Popup::onMoveRight), 0.48f);
 
         /* Load best score. */
-        m_bestScore = Mod::get()->getSavedValue<int>("best-score", 0);
+        //m_bestScore = Mod::get()->getSavedValue<int>("best-score", 0);
 
         /* Start new run. */
         this->resetGame();
@@ -386,11 +386,13 @@ protected:
     /* Refresh score and best-score labels. */
     void updateScoreLabels() {
         if (m_scoreValueLabel) {
-            m_scoreValueLabel->setString(std::to_string(m_score).c_str());
+            //m_scoreValueLabel->setString(std::to_string(m_score).c_str());
+            return;
         }
 
         if (m_bestValueLabel) {
-            m_bestValueLabel->setString(std::to_string(m_bestScore).c_str());
+            //m_bestValueLabel->setString(std::to_string(m_bestScore).c_str());
+            return;
         }
     }
 
@@ -449,8 +451,9 @@ protected:
     /* Update best-score state if current score exceeded it. */
     void updateBestScore() {
         if (m_score > m_bestScore) {
-            m_bestScore = m_score;
-            Mod::get()->setSavedValue<int>("best-score", m_bestScore);
+            //m_bestScore = m_score;
+            //Mod::get()->setSavedValue<int>("best-score", m_bestScore);
+            return;
         }
     }
 
@@ -558,8 +561,8 @@ protected:
         }
 
         m_score += totalScoreGain;
-        this->updateBestScore();
-        this->updateScoreLabels();
+        //this->updateBestScore();
+        //this->updateScoreLabels();
         return true;
     }
 
@@ -613,7 +616,7 @@ protected:
             this->setStatus("Still alive. Bigger tiles are possible.", ccc3(90, 140, 70));
         }
         else {
-            this->setStatus("Arrow keys, WASD, or the buttons below", ccc3(119, 110, 101));
+            this->setStatus("Arrow keys or WASD", ccc3(119, 110, 101));
         }
     }
 
@@ -647,7 +650,7 @@ protected:
         int second = this->spawnRandomTile();
         (void)first; /* only pulse most recent tile. */
 
-        this->updateScoreLabels();
+        //this->updateScoreLabels();
         this->refreshBoard(second);
         this->setStatus("Arrow keys or WASD.", ccc3(119, 110, 101));
     }
