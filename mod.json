@@ -32,6 +32,16 @@
 			"name": "Enable Tile Animations",
 			"description": "Adds a short slide animation when tiles move, plus a small pop when tiles merge.",
 			"default": true
+		},
+		"controls-title": {
+			"type": "title",
+			"name": "Controls"
+		},
+		"button-support": {
+			"type": "bool",
+			"name": "Buttons in Game",
+			"description": "Enable or Disable buttons showing in the game (excl New Game).",
+			"default": true
 		}
 	}
 }

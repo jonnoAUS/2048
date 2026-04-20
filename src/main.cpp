@@ -386,6 +386,31 @@ protected:
     std::mt19937 m_rng { std::random_device {}() };
 
 protected:
+    /* Utility for creating a popup control button. */
+    /* UPDATE v1.1.1: Rewrite to avoid default buttons as this had an issue with chunky proportions. */
+    CCMenuItemSpriteExtra* addControlButton(
+        CCMenu* menu,
+        char const* text,
+        CCPoint position,
+        SEL_MenuHandler callback,
+        float buttonScale,
+        float textScale
+    ) {
+        auto bg = CCScale9Sprite::create("GJ_button_05.png");
+        bg->setContentSize({ 34.f, 34.f });
+        bg->setScale(buttonScale);
+
+        auto label = CCLabelBMFont::create(text, "goldFont.fnt");
+        label->setPosition({ 17.f, 17.f });
+        label->setScale(textScale);
+        bg->addChild(label);
+
+        auto button = CCMenuItemSpriteExtra::create(bg, this, callback);
+        button->setPosition(position);
+        menu->addChild(button);
+        return button;
+    }
+
     /* Popup init. */
     bool init() override {
         if (!Popup::init(kPopupWidth, kPopupHeight)) {
@@ -503,11 +528,15 @@ protected:
         m_mainLayer->addChild(menu, 10);
 
         /* Button control row. */
-        this->addControlButton(menu, "NEW", {  52.f, 20.f }, menu_selector(Game2048Popup::onNewGame),   0.58f);
-        //this->addControlButton(menu, "UP", { size.width / 2.f, 28.f }, menu_selector(Game2048Popup::onMoveUp),    0.50f);
-        //this->addControlButton(menu, "LEFT", { size.width / 2.f - 40.f, 8.f }, menu_selector(Game2048Popup::onMoveLeft), 0.48f);
-        //this->addControlButton(menu, "DOWN", { size.width / 2.f, 8.f }, menu_selector(Game2048Popup::onMoveDown), 0.48f);
-        //this->addControlButton(menu, "RIGHT", { size.width / 2.f + 40.f, 8.f }, menu_selector(Game2048Popup::onMoveRight), 0.48f);
+        this->addControlButton(menu, "NEW", {  42.f, 20.f }, menu_selector(Game2048Popup::onNewGame), 0.58f, 0.65f);
+
+        bool showButtons = Mod::get()->getSettingValue<bool>("button-support");
+        if (showButtons) {
+            this->addControlButton(menu, "^", { size.width / 2.f, 28.f }, menu_selector(Game2048Popup::onMoveUp), 0.72f, 0.65f);
+            this->addControlButton(menu, "<", { size.width / 2.f - 38.f, 8.f }, menu_selector(Game2048Popup::onMoveLeft), 0.72f, 0.65f);
+            this->addControlButton(menu, "v", { size.width / 2.f, 8.f }, menu_selector(Game2048Popup::onMoveDown), 0.72f, 0.65f);
+            this->addControlButton(menu, ">", { size.width / 2.f + 38.f, 8.f }, menu_selector(Game2048Popup::onMoveRight), 0.72f, 0.65f);
+        }
 
         /* Load best score. */
         //m_bestScore = Mod::get()->getSavedValue<int>("best-score", 0);
@@ -515,22 +544,6 @@ protected:
         /* Start new run. */
         this->resetGame();
         return true;
-    }
-
-    /* Utility for creating a popup control button. */
-    CCMenuItemSpriteExtra* addControlButton(
-        CCMenu* menu,
-        char const* text,
-        CCPoint position,
-        SEL_MenuHandler callback,
-        float scale
-    ) {
-        auto sprite = ButtonSprite::create(text);
-        auto button = CCMenuItemSpriteExtra::create(sprite, this, callback);
-        button->setPosition(position);
-        button->setScale(scale);
-        menu->addChild(button);
-        return button;
     }
 
     /* Update bottom status label text+color. */
