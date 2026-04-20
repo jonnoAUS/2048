@@ -31,6 +31,13 @@ namespace {
     constexpr float kBoardGap = 6.f;
     constexpr float kCellSize = (kBoardSize - (kBoardPadding * 2.f) - (kBoardGap * 3.f)) / 4.f;
 
+    /* Animation timing. */
+    constexpr float kTileMoveAnimDuration = 0.085f;
+    constexpr float kTileMergePopDuration = 0.065f;
+
+    /* Geode setting key. */
+    constexpr char const* kTileAnimationSettingKey = "tile-animations";
+
     /* Move directions. */
     enum class MoveDir {
         Left,
@@ -39,17 +46,39 @@ namespace {
         Down
     };
 
+    /* Shared board type. */
+    using Board = std::array<std::array<int, kBoardSide>, kBoardSide>;
+
     /**
-     * Result of collapsing a single 4-cell line.
+     * Simple motion desc for one visual tile during a move.
      *
-     * `line` = new state after pack+merge
-     * `scoreGain` = how many points it contributed
-     * `changed` = whether the line changed
+     * `fromIndex` = original flat cell index
+     * `toIndex` = dest flat cell index
+     * `value` = tile val before merge
+     * `merged` = whether tile merged
      */
-    struct LineMoveResult {
-        std::array<int, kBoardSide> line {};
+    struct TileMotion {
+        int fromIndex = -1;
+        int toIndex = -1;
+        int value = 0;
+        bool merged = false;
+    };
+
+    /**
+     * Simulated move result.
+     *
+     * `board` = board state after move
+     * `scoreGain` = score delta from merges
+     * `changed` = whether anything moved/merged
+     * `mergedIndices` = dest cells that should get merge effect
+     * `motions` = raw tile travel data for anim layer
+     */
+    struct MoveSimulation {
+        Board board {};
         int scoreGain = 0;
         bool changed = false;
+        std::vector<int> mergedIndices;
+        std::vector<TileMotion> motions;
     };
 
     /* Helper for creating a solid colored layer. */
@@ -120,7 +149,7 @@ namespace {
     }
 
     /* Returns `true` if board contains at least one `tile >= target`. */
-    bool boardHasValue(std::array<std::array<int, kBoardSide>, kBoardSide> const& board, int target) {
+    bool boardHasValue(Board const& board, int target) {
         for (auto const& row : board) {
             for (int value : row) {
                 if (value >= target) {
@@ -138,7 +167,7 @@ namespace {
      *  - any cell is empty
      *  - any horizontal/vertical neighbor can merge
      */
-    bool boardCanMove(std::array<std::array<int, kBoardSide>, kBoardSide> const& board) {
+    bool boardCanMove(Board const& board) {
         for (int row = 0; row < kBoardSide; ++row) {
             for (int col = 0; col < kBoardSide; ++col) {
                 if (board[row][col] == 0) {
@@ -157,42 +186,148 @@ namespace {
     }
 
     /**
-     * Collapse single line.
+     * Converts move line pos into a flat board index.
      *
-     * Example:
-     *  [2, 0, 2, 4] -> [4, 4, 0, 0]
-     *  [2, 2, 2, 2] -> [4, 4, 0, 0]
+     * Left / Right:
+     *      `outer` is row, `inner` is col
+     *
+     * Up / Down:
+     *      `outer` is col, `inner` is row
      */
-    LineMoveResult collapseLine(std::array<int, kBoardSide> const& input) {
-        std::vector<int> packed;
-        packed.reserve(kBoardSide);
+    int boardIndexFor(MoveDir dir, int outer, int inner) {
+        switch (dir) {
+            case MoveDir::Left:
+            case MoveDir::Right:
+                return outer * kBoardSide + inner;
 
-        /* Step 1: strip zeroes. */
-        for (int value : input) {
-            if (value != 0) {
-                packed.push_back(value);
+            case MoveDir::Up:
+            case MoveDir::Down:
+                return inner * kBoardSide + outer;
+        }
+
+        return 0;
+    }
+
+    /**
+     * Simulate one whole move.
+     *
+     * This does two jobs:
+     *      1. Builds resulting board
+     *      2. Records where each visible tile should slide
+     *
+     * That lets the animation move first, then commit the new board after.
+     */
+    MoveSimulation simulateMove(Board const& board, MoveDir dir) {
+        MoveSimulation sim {};
+        sim.board = board;
+
+        /* Process each row/col depending on dir. */
+        for (int outer = 0; outer < kBoardSide; ++outer) {
+            std::array<int, kBoardSide> line {};
+            std::array<int, kBoardSide> indices {};
+
+            /**
+             * Extract one logical line from the board.
+             *
+             * `line` = tile vals in move order
+             * `indices` = flat board indices
+             */
+            for (int inner = 0; inner < kBoardSide; ++inner) {
+                int flat = boardIndexFor(dir, outer, inner);
+                indices[inner] = flat;
+                line[inner] = board[flat / kBoardSide][flat % kBoardSide];
+            }
+
+            /**
+             * Right / Down are handled by reversing logical view first.
+             *
+             * This means only one pack+merge needed.
+             */
+            bool reverse = (dir == MoveDir::Right || dir == MoveDir::Down);
+            if (reverse) {
+                std::reverse(line.begin(), line.end());
+                std::reverse(indices.begin(), indices.end());
+            }
+
+            /**
+             * `packed` stores only non-zero cells, while preserving original
+             * indices so anim layer knows where tiles came from.
+             */
+            std::vector<std::pair<int, int>> packed;
+            packed.reserve(kBoardSide);
+
+            for (int i = 0; i < kBoardSide; ++i) {
+                if (line[i] != 0) {
+                    packed.emplace_back(line[i], indices[i]);
+                }
+            }
+
+            std::array<int, kBoardSide> movedLine {};
+            int outIndex = 0;
+
+            /* Standard 2048 pack+merge pass. */
+            for (size_t i = 0; i < packed.size(); ++i) {
+                int destIndex = indices[outIndex];
+
+                if (i + 1 < packed.size() && packed[i].first == packed[i + 1].first) {
+                    int mergedValue = packed[i].first * 2;
+
+                    movedLine[outIndex] = mergedValue;
+                    sim.scoreGain += mergedValue;
+                    sim.mergedIndices.push_back(destIndex);
+
+                    /* Both source tiles travel to same dest. */
+                    sim.motions.push_back({
+                        packed[i].second,
+                        destIndex,
+                        packed[i].first,
+                        true
+                    });
+
+                    sim.motions.push_back({
+                        packed[i + 1].second,
+                        destIndex,
+                        packed[i + 1].first,
+                        true
+                    });
+
+                    ++outIndex;
+                    ++i; /* consume second tile. */
+                }
+                else {
+                    /* No merge. */
+                    movedLine[outIndex] = packed[i].first;
+
+                    sim.motions.push_back({
+                        packed[i].second,
+                        destIndex,
+                        packed[i].first,
+                        false
+                    });
+
+                    ++outIndex;
+                }
+            }
+
+            /* If line differs, move is valid. */
+            if (movedLine != line) {
+                sim.changed = true;
+            }
+
+            /* Reverse back for writeback if this was a Right / Down move. */
+            auto writeLine = movedLine;
+            if (reverse) {
+                std::reverse(writeLine.begin(), writeLine.end());
+            }
+
+            /* Store processed line back into simulated board. */
+            for (int inner = 0; inner < kBoardSide; ++inner) {
+                int flat = boardIndexFor(dir, outer, inner);
+                sim.board[flat / kBoardSide][flat % kBoardSide] = writeLine[inner];
             }
         }
 
-        LineMoveResult result {};
-
-        /* Step 2: merge neighbors. */
-        int outIndex = 0;
-        for (size_t i = 0; i < packed.size(); ++i) {
-            if (i + 1 < packed.size() && packed[i] == packed[i + 1]) {
-                int merged = packed[i] * 2;
-                result.line[outIndex++] = merged;
-                result.scoreGain += merged;
-                ++i; /* consume second tile. */
-            }
-            else {
-                result.line[outIndex++] = packed[i];
-            }
-        }
-
-        /* Step 3: compare against original to see if anything changed. */
-        result.changed = (result.line != input);
-        return result;
+        return sim;
     }
 }
 
@@ -213,6 +348,11 @@ protected:
     std::array<CCLabelBMFont*, kCellCount> m_tileLabels {};
     std::array<CCLayerColor*, kCellCount> m_slotLayers {};
 
+    /* Board rendering helpers. */
+    CCLayerColor* m_boardBg = nullptr;
+    CCNode* m_animLayer = nullptr;
+    std::array<CCPoint, kCellCount> m_cellCenters {};
+
     /* HUD labels. */
     CCLabelBMFont* m_scoreValueLabel = nullptr;
     CCLabelBMFont* m_bestValueLabel = nullptr;
@@ -229,9 +369,18 @@ protected:
      *      Stops 2048 popup from spamming multiple times once 2048 has been reached.
      * `m_isGameOver`:
      *      Block further movements until reset.
+     *
+     * `m_isAnimating`:
+            Blocks input while temp slide anim is in progress.
      */
     bool m_hasShownWinPopup = false;
     bool m_isGameOver = false;
+    bool m_isAnimating = false;
+
+    /* Pending post-anim state. */
+    Board m_pendingBoard {};
+    std::vector<int> m_pendingMergedIndices;
+    int m_pendingSpawnIndex = -1;
 
     /* Random source for spawn placement. */
     std::mt19937 m_rng { std::random_device {}() };
@@ -295,14 +444,20 @@ protected:
         m_mainLayer->addChild(boardRoot);
 
         /* Board background. */
-        auto boardBg = makeSolid(boardTrayColor(), kBoardSize, kBoardSize);
-        boardBg->setPosition({ kBoardSize / 2.f, kBoardSize / 2.f });
-        boardRoot->addChild(boardBg);
+        m_boardBg = makeSolid(boardTrayColor(), kBoardSize, kBoardSize);
+        m_boardBg->setPosition({ kBoardSize / 2.f, kBoardSize / 2.f });
+        boardRoot->addChild(m_boardBg);
+
+        /* Dedicated anim layer. */
+        m_animLayer = CCNode::create();
+        m_animLayer->setPosition(CCPointZero);
+        m_boardBg->addChild(m_animLayer, 20);
 
         /**
          * Pre-create all tile visuals.
          *
          * Each board slot gets:
+         *  - colored slot bg
          *  - colored layer
          *  - bitmap label centered on that layer
          */
@@ -314,14 +469,16 @@ protected:
                 float x = kBoardPadding + (kCellSize / 2.f) + col * (kCellSize + kBoardGap);
                 float y = kBoardSize - kBoardPadding - (kCellSize / 2.f) - row * (kCellSize + kBoardGap);
 
+                m_cellCenters[index] = CCPoint{ x, y };
+
                 auto slot = makeSolid(slotColor(), kCellSize, kCellSize);
                 slot->setPosition({ x, y });
-                boardBg->addChild(slot, 0);
+                m_boardBg->addChild(slot, 0);
                 m_slotLayers[index] = slot;
 
                 auto tile = makeSolid(tileColorForValue(2), kCellSize, kCellSize);
                 tile->setPosition({ x, y });
-                boardBg->addChild(tile, 1);
+                m_boardBg->addChild(tile, 1);
                 m_tileLayers[index] = tile;
 
                 auto label = CCLabelBMFont::create("", "chatFont.fnt");
@@ -396,12 +553,56 @@ protected:
         }
     }
 
+    /* Returns if anims are enabled. */
+    bool tileAnimationsEnabled() const {
+        auto mod = Mod::get();
+        if (!mod->hasSetting(kTileAnimationSettingKey)) {
+            return true;
+        }
+        return mod->getSettingValue<bool>(kTileAnimationSettingKey);
+    }
+
+    /* Create temp visual tile for anim layer. */
+    CCLayerColor* createAnimatedTile(int value) {
+        auto tile = makeSolid(tileColorForValue(value), kCellSize, kCellSize);
+
+        auto label = CCLabelBMFont::create(std::to_string(value).c_str(), "chatFont.fnt");
+        label->setPosition({ kCellSize / 2.f, kCellSize / 2.f - 1.f });
+        label->setScale(tileLabelScaleForValue(value));
+        label->setColor(tileTextColorForValue(value));
+        tile->addChild(label);
+
+        return tile;
+    }
+
+    /* Clear all transient sliding tiles. */
+    void clearAnimationLayer() {
+        if (m_animLayer) {
+            m_animLayer->removeAllChildrenWithCleanup(true);
+        }
+    }
+
+    /* Hide all board tiles temporarily. */
+    void hideStaticTiles() {
+        for (int i = 0; i < kCellCount; ++i) {
+            if (m_tileLayers[i]) {
+                m_tileLayers[i]->setVisible(false);
+            }
+            if (m_tileLabels[i]) {
+                m_tileLabels[i]->setVisible(false);
+            }
+        }
+    }
+
     /**
      * Push current board state into visual tile grid.
      *
      * `pulseIndex` = optional flat tile index to animate as newly spawned tile.
+     * `mergedIndices` = cells that should get merge "pop" anim.
      */
-    void refreshBoard(int pulseIndex = -1) {
+    void refreshBoard(int pulseIndex = -1, std::vector<int> const& mergedIndices = {}) {
+        bool animate = this->tileAnimationsEnabled();
+
         for (int row = 0; row < kBoardSide; ++row) {
             for (int col = 0; col < kBoardSide; ++col) {
                 int index = row * kBoardSide + col;
@@ -444,6 +645,18 @@ protected:
                         )
                     );
                 }
+
+                /* Merge destination gets quick pop effect. */
+                else if (std::find(mergedIndices.begin(), mergedIndices.end(), index) != mergedIndices.end()) {
+                    tile->setScale(1.f);
+                    tile->runAction(
+                        CCSequence::create(
+                            CCEaseSineOut::create(CCScaleTo::create(kTileMergePopDuration, 1.14f)),
+                            CCEaseSineIn::create(CCScaleTo::create(kTileMergePopDuration, 1.f)),
+                            nullptr
+                        )
+                    );
+                }
             }
         }
     }
@@ -464,14 +677,14 @@ protected:
      *  - 90% chance for 2
      *  - 10% chance for 4
      */
-    int spawnRandomTile() {
+    int spawnRandomTile(Board& board) {
         std::vector<int> empty;
         empty.reserve(kCellCount);
 
         /* Collect all empty board slots. */
         for (int row = 0; row < kBoardSide; ++row) {
             for (int col = 0; col < kBoardSide; ++col) {
-                if (m_board[row][col] == 0) {
+                if (board[row][col] == 0) {
                     empty.push_back(row * kBoardSide + col);
                 }
             }
@@ -490,85 +703,18 @@ protected:
         int col = index % kBoardSide;
 
         /* Spawn odds. */
-        m_board[row][col] = (pickValue(m_rng) == 10) ? 4 : 2;
+        board[row][col] = (pickValue(m_rng) == 10) ? 4 : 2;
         return index;
     }
 
-    /* Apply directional move to full board. */
-    bool applyMove(MoveDir dir) {
-        bool changed = false;
-        int totalScoreGain = 0;
-
-        /* Process each row/column depending on move dir. */
-        for (int outer = 0; outer < kBoardSide; ++outer) {
-            std::array<int, kBoardSide> line {};
-
-            /**
-             * Extract one logical line from the board.
-             *
-             * Left/Right -> rows
-             * Up/Down -> cols
-             */
-            for (int inner = 0; inner < kBoardSide; ++inner) {
-                switch (dir) {
-                    case MoveDir::Left:
-                    case MoveDir::Right:
-                        line[inner] = m_board[outer][inner];
-                        break;
-
-                    case MoveDir::Up:
-                    case MoveDir::Down:
-                        line[inner] = m_board[inner][outer];
-                        break;
-                }
-            }
-
-            /* Reuse same logic for Right/Down by reversing first. */
-            bool reverse = (dir == MoveDir::Right || dir == MoveDir::Down);
-            if (reverse) {
-                std::reverse(line.begin(), line.end());
-            }
-
-            auto moved = collapseLine(line);
-
-            /* Reverse back so writeback uses normal board orientation. */
-            if (reverse) {
-                std::reverse(moved.line.begin(), moved.line.end());
-            }
-
-            changed = changed || moved.changed;
-            totalScoreGain += moved.scoreGain;
-
-            /* Write processed line back to board. */
-            for (int inner = 0; inner < kBoardSide; ++inner) {
-                switch (dir) {
-                    case MoveDir::Left:
-                    case MoveDir::Right:
-                        m_board[outer][inner] = moved.line[inner];
-                        break;
-
-                    case MoveDir::Up:
-                    case MoveDir::Down:
-                        m_board[inner][outer] = moved.line[inner];
-                        break;
-                }
-            }
-        }
-
-        /* If nothing changed, invalid move. */
-        if (!changed) {
-            return false;
-        }
-
-        m_score += totalScoreGain;
-        //this->updateBestScore();
-        //this->updateScoreLabels();
-        return true;
+    /* Build move sim from current board. */
+    MoveSimulation computeMove(MoveDir dir) const {
+        return simulateMove(m_board, dir);
     }
 
     /* Finalize visual/state consequences of successful move. */
-    void finishMove(int pulseIndex) {
-        this->refreshBoard(pulseIndex);
+    void finishMove(int pulseIndex, std::vector<int> const& mergedIndices = {}) {
+        this->refreshBoard(pulseIndex, mergedIndices);
         this->updateScoreLabels();
 
         /* First time reaching 2048. */
@@ -616,8 +762,74 @@ protected:
             this->setStatus("Still alive. Bigger tiles are possible.", ccc3(90, 140, 70));
         }
         else {
-            this->setStatus("Arrow keys or WASD", ccc3(119, 110, 101));
+            this->setStatus("Arrow keys or WASD.", ccc3(119, 110, 101));
         }
+    }
+
+    /* Start move anim. */
+    void runMoveAnimation(MoveSimulation const& move, Board const& finalBoard, int spawnIndex) {
+        if (!m_animLayer) {
+            m_board = finalBoard;
+            this->finishMove(spawnIndex, move.mergedIndices);
+            return;
+        }
+
+        m_isAnimating = true;
+        m_pendingBoard = finalBoard;
+        m_pendingMergedIndices = move.mergedIndices;
+        m_pendingSpawnIndex = spawnIndex;
+        
+        this->clearAnimationLayer();
+        this->hideStaticTiles();
+
+        for (auto const& motion : move.motions) {
+            if (motion.value == 0 || motion.fromIndex < 0 || motion.toIndex < 0) {
+                continue;
+            }
+
+            auto animatedTile = this->createAnimatedTile(motion.value);
+            animatedTile->setPosition(m_cellCenters[motion.fromIndex]);
+            m_animLayer->addChild(animatedTile);
+
+            /**
+             * Even if a tile technically stays in place, keep tiny delay so
+             * move resolves on one timing path.
+             */
+            CCFiniteTimeAction* moveAction = nullptr;
+
+            if (motion.fromIndex == motion.toIndex) {
+                moveAction = CCDelayTime::create(kTileMoveAnimDuration);
+            }
+            else {
+                moveAction = CCEaseSineOut::create(
+                    CCMoveTo::create(kTileMoveAnimDuration, m_cellCenters[motion.toIndex])
+                );
+            }
+
+            animatedTile->runAction(moveAction);
+        }
+
+        /* Once travel is done, commit to real board. */
+        this->runAction(
+            CCSequence::create(
+                CCDelayTime::create(kTileMoveAnimDuration),
+                CCCallFunc::create(this, callfunc_selector(Game2048Popup::onMoveAnimationFinished)),
+                nullptr
+            )
+        );
+    }
+
+    /* End-of-anim callback. */
+    void onMoveAnimationFinished() {
+        m_isAnimating = false;
+
+        this->clearAnimationLayer();
+
+        m_board = m_pendingBoard;
+        this->finishMove(m_pendingSpawnIndex, m_pendingMergedIndices);
+
+        m_pendingMergedIndices.clear();
+        m_pendingSpawnIndex = -1;
     }
 
     /* Public-facing movement entry point. Keyboard/button callbacks use this. */
@@ -626,17 +838,41 @@ protected:
             return;
         }
 
+        /* Simulate first to know where tiles should slide. */
+        auto move = this->computeMove(dir);
+
         /* Ignore invalid moves. */
-        if (!this->applyMove(dir)) {
+        if (!move.changed) {
             return;
         }
 
-        int spawned = this->spawnRandomTile();
-        this->finishMove(spawned);
+        /* Spawn happens after successful move, not inside sim. */
+        Board nextBoard = move.board;
+        int spawned = this->spawnRandomTile(nextBoard);
+
+        m_score += move.scoreGain;
+        this->updateBestScore();
+        this->updateScoreLabels();
+
+        /* Either animate move or apply it instantly depending on settings. */
+        if (this->tileAnimationsEnabled()) {
+            this->runMoveAnimation(move, nextBoard, spawned);
+        }
+        else {
+            m_board = nextBoard;
+            this->finishMove(spawned, move.mergedIndices);
+        }
     }
 
     /* Reset to a new game. */
     void resetGame() {
+        this->stopAllActions();
+        this->clearAnimationLayer();
+
+        m_isAnimating = false;
+        m_pendingMergedIndices.clear();
+        m_pendingSpawnIndex = -1;
+
         for (auto& row : m_board) {
             row.fill(0);
         }
@@ -646,8 +882,8 @@ protected:
         m_hasShownWinPopup = false;
 
         /* Two tile opening. */
-        int first = this->spawnRandomTile();
-        int second = this->spawnRandomTile();
+        int first = this->spawnRandomTile(m_board);
+        int second = this->spawnRandomTile(m_board);
         (void)first; /* only pulse most recent tile. */
 
         //this->updateScoreLabels();
