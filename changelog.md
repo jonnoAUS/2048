@@ -1,3 +1,7 @@
+# 1.1.2
+- Fixed extra input being allowed during animations
+- Fixed "Game Over" / "2048!" by deferring one frame
+
 # 1.1.1
 - Mobile support (Not a great implementation, but hopefully future updates will fix this)
 

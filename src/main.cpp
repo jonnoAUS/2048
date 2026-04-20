@@ -726,6 +726,7 @@ protected:
     }
 
     /* Finalize visual/state consequences of successful move. */
+    /* UPDATE v1.1.2: Defer "Game Over" / "2048!" by one frame. */
     void finishMove(int pulseIndex, std::vector<int> const& mergedIndices = {}) {
         this->refreshBoard(pulseIndex, mergedIndices);
         this->updateScoreLabels();
@@ -735,17 +736,11 @@ protected:
             m_hasShownWinPopup = true;
             this->setStatus("2048 reached. Keep climbing.", ccc3(90, 140, 70));
 
-            createQuickPopup(
-                "2048!",
-                "Nice. The <cg>2048</c> tile is on the board.",
-                "Keep Going",
-                "New Game",
-                [this](auto, bool btn2) {
-                    if (btn2) {
-                        this->resetGame();
-                    }
-                }
-            );
+            this->runAction(CCSequence::create(
+                CCDelayTime::create(0.f),
+                CCCallFunc::create(this, callfunc_selector(Game2048Popup::showWinPopup)),
+                nullptr
+            ));
 
             return;
         }
@@ -755,17 +750,11 @@ protected:
             m_isGameOver = true;
             this->setStatus("No moves left.", ccc3(180, 70, 70));
 
-            createQuickPopup(
-                "Game Over",
-                ("Final score: " + std::to_string(m_score)).c_str(),
-                "Close",
-                "Retry",
-                [this](auto, bool btn2) {
-                    if (btn2) {
-                        this->resetGame();
-                    }
-                }
-            );
+            this->runAction(CCSequence::create(
+                CCDelayTime::create(0.f),
+                CCCallFunc::create(this, callfunc_selector(Game2048Popup::showGameOverPopup)),
+                nullptr
+            ));
 
             return;
         }
@@ -845,9 +834,40 @@ protected:
         m_pendingSpawnIndex = -1;
     }
 
+    /* Show `Win` popup. */
+    void showWinPopup() {
+        createQuickPopup(
+            "2048!",
+            "Nice. The <cg>2048</c> tile is on the board!",
+            "Keep Going",
+            "New Game",
+            [this](auto, bool btn2) {
+                if (btn2) {
+                    this->resetGame();
+                }
+            }
+        );
+    }
+
+    /* Show `Game Over` popup. */
+    void showGameOverPopup() {
+        createQuickPopup(
+            "Game Over",
+            ("<cl>Final Score:</c> <cy>" + std::to_string(m_score) + "</c>").c_str(),
+            "Close",
+            "Retry",
+            [this](auto, bool btn2) {
+                if (btn2) {
+                    this->resetGame();
+                }
+            }
+        );
+    }
+
     /* Public-facing movement entry point. Keyboard/button callbacks use this. */
+    /* UPDATE v1.1.2: Block input while animation. `showWinPopup()`, `showGameOverPopup()` */
     void requestMove(MoveDir dir) {
-        if (m_isGameOver) {
+        if (m_isGameOver || m_isAnimating) {
             return;
         }
 
