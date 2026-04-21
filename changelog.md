@@ -1,3 +1,6 @@
+# 1.1.3
+- Progress is now saved when exiting the game
+
 # 1.1.2
 - Fixed extra input being allowed during animations
 - Fixed "Game Over" / "2048!" by deferring one frame

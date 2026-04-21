@@ -411,6 +411,84 @@ protected:
         return button;
     }
 
+    /* UPDATE v1.1.3: Save progress when exiting a game. */
+    void saveProgress() {
+        /* Only persist if run is still alive. */
+        if (m_isGameOver) {
+            return;
+        }
+
+        auto mod = Mod::get();
+
+        /* Flatten 4x4 into one array for storage. */
+        std::vector<int> flat;
+        flat.reserve(kCellCount);
+
+        for (int row = 0; row < kBoardSide; ++row) {
+            for (int col = 0; col < kBoardSide; ++col) {
+                flat.push_back(m_board[row][col]);
+            }
+        }
+
+        mod->setSavedValue("resume-exists", true);
+        mod->setSavedValue("resume-board", flat);
+        mod->setSavedValue("resume-score", m_score);
+        mod->setSavedValue("resume-best-score", m_bestScore);
+        mod->setSavedValue("resume-win-shown", m_hasShownWinPopup);
+    }
+
+    /* Clear progress. */
+    void clearSavedProgress() {
+        auto mod = Mod::get();
+
+        mod->setSavedValue("resume-exists", false);
+        mod->setSavedValue("resume-board", std::vector<int>{});
+        mod->setSavedValue("resume-score", 0);
+        mod->setSavedValue("resume-best-score", 0);
+        mod->setSavedValue("resume-win-shown", false);
+    }
+
+    /* Load progress. */
+    bool loadSavedProgress() {
+        auto mod = Mod::get();
+
+        if (!mod->getSavedValue<bool>("resume-exists", false)) {
+            return false;
+        }
+
+        auto flat = mod->getSavedValue<std::vector<int>>("resume-board", {});
+        if (flat.size() != kCellCount) {
+            return false;
+        }
+
+        for (int row = 0; row < kBoardSide; ++row) {
+            for (int col = 0; col < kBoardSide; ++col) {
+                m_board[row][col] = flat[row * kBoardSide + col];
+            }
+        }
+
+        m_score = mod->getSavedValue<int>("resume-score", 0);
+        m_bestScore = mod->getSavedValue<int>("resume-best-score", 0);
+        m_hasShownWinPopup = mod->getSavedValue<bool>("resume-win-shown", false);
+        m_isGameOver = false;
+        m_isAnimating = false;
+        m_pendingMergedIndices.clear();
+        m_pendingSpawnIndex = -1;
+
+        //this->updateScoreLabels();
+        this->refreshBoard();
+        this->setStatus("Resumed previous game.", ccc3(119, 110, 101));
+        return true;
+    }
+
+    void onClose(CCObject* sender) override {
+        /* Save only when player is leaving still-active run. */
+        if (!m_isGameOver) {
+            this->saveProgress();
+        }
+        Popup::onClose(sender);
+    }
+
     /* Popup init. */
     bool init() override {
         if (!Popup::init(kPopupWidth, kPopupHeight)) {
@@ -541,8 +619,10 @@ protected:
         /* Load best score. */
         //m_bestScore = Mod::get()->getSavedValue<int>("best-score", 0);
 
-        /* Start new run. */
-        this->resetGame();
+        /* Resume existing game if present. */
+        if (!this->loadSavedProgress()) {
+            this->resetGame();
+        }
         return true;
     }
 
@@ -727,6 +807,7 @@ protected:
 
     /* Finalize visual/state consequences of successful move. */
     /* UPDATE v1.1.2: Defer "Game Over" / "2048!" by one frame. */
+    /* UPDATE v1.1.3: Clear save progress if game over. */
     void finishMove(int pulseIndex, std::vector<int> const& mergedIndices = {}) {
         this->refreshBoard(pulseIndex, mergedIndices);
         this->updateScoreLabels();
@@ -748,6 +829,9 @@ protected:
         /* No legal moves. */
         if (!boardCanMove(m_board)) {
             m_isGameOver = true;
+            /* Clear saved progress. */
+            this->clearSavedProgress();
+            
             this->setStatus("No moves left.", ccc3(180, 70, 70));
 
             this->runAction(CCSequence::create(
@@ -899,6 +983,9 @@ protected:
 
     /* Reset to a new game. */
     void resetGame() {
+        /* Clear saved progress. */
+        this->clearSavedProgress();
+
         this->stopAllActions();
         this->clearAnimationLayer();
 
